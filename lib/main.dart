@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:flutter/services.dart';
 import 'package:local_auth/error_codes.dart' as auth_error;
+import 'package:url_launcher/url_launcher.dart';
+import 'dart:async';
+import 'package:uni_links/uni_links.dart';
 
 void main() {
   // Garante que a inicialização do Flutter está completa
@@ -15,7 +18,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Face Unlock App',
+      title: 'Face ID Auth Bridge',
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
         useMaterial3: true,
@@ -32,18 +35,91 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
-class _AuthScreenState extends State<AuthScreen> {
+class _AuthScreenState extends State<AuthScreen> with WidgetsBindingObserver {
   final LocalAuthentication _localAuth = LocalAuthentication();
   bool _isAuthenticated = false;
   String _authMessage = 'Iniciando autenticação...';
   bool _biometricsAvailable = false;
   bool _checkingBiometrics = true;
   List<BiometricType> _availableBiometrics = [];
+  StreamSubscription? _deepLinkSubscription;
+  bool _processingDeepLink = false;
+  
+  // URL base para redirecionamento após autenticação
+  final String _redirectBaseUrl = 'https://faceid-login-flow.lovable.app/';
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initDeepLinkListener();
     _checkBiometrics();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _deepLinkSubscription?.cancel();
+    super.dispose();
+  }
+
+  // Inicializa o listener para deep links
+  Future<void> _initDeepLinkListener() async {
+    // Verifica se o app foi aberto por um deep link
+    try {
+      final initialLink = await getInitialUri();
+      if (initialLink != null) {
+        _handleDeepLink(initialLink);
+      }
+    } on PlatformException {
+      // Erro ao obter o deep link inicial
+      print('Erro ao obter o deep link inicial');
+    }
+
+    // Configura o listener para deep links futuros
+    _deepLinkSubscription = uriLinkStream.listen((Uri? uri) {
+      if (uri != null) {
+        _handleDeepLink(uri);
+      }
+    }, onError: (err) {
+      print('Erro no stream de deep links: $err');
+    });
+  }
+
+  // Processa o deep link recebido
+  void _handleDeepLink(Uri uri) {
+    print('Deep link recebido: $uri');
+    // Verifica se é o deep link esperado (flutterfaceid://auth)
+    if (uri.scheme == 'flutterfaceid' && uri.host == 'auth') {
+      setState(() {
+        _processingDeepLink = true;
+      });
+      
+      // Se a biometria já foi verificada, inicia a autenticação
+      if (!_checkingBiometrics && _biometricsAvailable) {
+        _authenticate();
+      }
+    }
+  }
+  
+  // Redireciona de volta para o front-end após a autenticação
+  Future<void> _redirectToFrontend(bool success) async {
+    String redirectUrl = '$_redirectBaseUrl?auth=${success ? 'success' : 'fail'}';
+    
+    try {
+      final Uri url = Uri.parse(redirectUrl);
+      await launchUrl(url, mode: LaunchMode.externalApplication);
+      
+      // Opcional: fecha o app após o redirecionamento
+      Future.delayed(const Duration(seconds: 1), () {
+        SystemNavigator.pop();
+      });
+    } catch (e) {
+      print('Erro ao redirecionar: $e');
+      setState(() {
+        _authMessage = 'Erro ao redirecionar: $e';
+      });
+    }
   }
 
   Future<void> _checkBiometrics() async {
@@ -75,10 +151,10 @@ class _AuthScreenState extends State<AuthScreen> {
         _checkingBiometrics = false;
       });
       
-      if (_biometricsAvailable) {
-        // Iniciar autenticação automaticamente
+      // Se estiver processando um deep link e a biometria estiver disponível, autenticar
+      if (_processingDeepLink && _biometricsAvailable) {
         _authenticate();
-      } else {
+      } else if (!_biometricsAvailable) {
         setState(() {
           _authMessage = 'Biometria não disponível neste dispositivo';
           if (!isDeviceSupported) {
@@ -89,6 +165,11 @@ class _AuthScreenState extends State<AuthScreen> {
             _authMessage = 'Nenhuma biometria cadastrada no dispositivo';
           }
         });
+        
+        // Redireciona com falha se não houver biometria disponível
+        if (_processingDeepLink) {
+          _redirectToFrontend(false);
+        }
       }
     } on PlatformException catch (e) {
       setState(() {
@@ -96,6 +177,11 @@ class _AuthScreenState extends State<AuthScreen> {
         _authMessage = 'Erro ao verificar biometria: ${e.message}';
         print('Erro detalhado: ${e.code} - ${e.message} - ${e.details}');
       });
+      
+      // Redireciona com falha em caso de erro
+      if (_processingDeepLink) {
+        _redirectToFrontend(false);
+      }
     }
   }
 
@@ -112,21 +198,26 @@ class _AuthScreenState extends State<AuthScreen> {
       
       // Tenta autenticação com opções específicas
       bool isAuthenticated = await _localAuth.authenticate(
-        localizedReason: 'Por favor, use sua biometria para desbloquear',
+        localizedReason: 'Por favor, use sua biometria para autenticar',
         options: const AuthenticationOptions(
           biometricOnly: true,
           stickyAuth: true,
-          sensitiveTransaction: false, // Pode ajudar em alguns dispositivos
-          useErrorDialogs: true, // Exibe diálogos de erro do sistema
+          sensitiveTransaction: false,
+          useErrorDialogs: true,
         ),
       );
       
       setState(() {
         _isAuthenticated = isAuthenticated;
         _authMessage = isAuthenticated 
-            ? 'Autenticação bem-sucedida! Acesso permitido.'
+            ? 'Autenticação bem-sucedida! Redirecionando...'
             : 'Autenticação falhou. Tente novamente.';
       });
+      
+      // Se veio de um deep link, redireciona com o resultado
+      if (_processingDeepLink) {
+        _redirectToFrontend(isAuthenticated);
+      }
     } on PlatformException catch (e) {
       String message = 'Erro de autenticação desconhecido';
       
@@ -157,6 +248,11 @@ class _AuthScreenState extends State<AuthScreen> {
       print('Código do erro: ${e.code}');
       print('Mensagem do erro: ${e.message}');
       print('Detalhes do erro: ${e.details}');
+      
+      // Se veio de um deep link, redireciona com falha
+      if (_processingDeepLink) {
+        _redirectToFrontend(false);
+      }
     }
   }
 
@@ -165,7 +261,7 @@ class _AuthScreenState extends State<AuthScreen> {
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: const Text('Face Unlock App'),
+        title: const Text('Face ID Auth Bridge'),
       ),
       body: Center(
         child: Padding(
@@ -196,14 +292,14 @@ class _AuthScreenState extends State<AuthScreen> {
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 20),
-              if (_biometricsAvailable && !_isAuthenticated)
+              if (_biometricsAvailable && !_isAuthenticated && !_processingDeepLink)
                 Text(
                   'Biometrias disponíveis: ${_availableBiometrics.map((b) => b.toString().split('.').last).join(', ')}',
-                  style: TextStyle(fontSize: 16),
+                  style: const TextStyle(fontSize: 16),
                   textAlign: TextAlign.center,
                 ),
               const SizedBox(height: 40),
-              if (_biometricsAvailable)
+              if (_biometricsAvailable && !_processingDeepLink)
                 ElevatedButton.icon(
                   onPressed: _authenticate,
                   icon: const Icon(Icons.refresh),
