@@ -5,6 +5,7 @@ import 'package:local_auth/error_codes.dart' as auth_error;
 import 'package:url_launcher/url_launcher.dart';
 import 'dart:async';
 import 'package:uni_links/uni_links.dart';
+import 'package:webview_flutter/webview_flutter.dart';
 
 void main() {
   // Garante que a inicialização do Flutter está completa
@@ -315,6 +316,59 @@ class _AuthScreenState extends State<AuthScreen> with WidgetsBindingObserver {
           ),
         ),
       ),
+    );
+  }
+}
+
+class WebAuthPage extends StatefulWidget {
+  const WebAuthPage({super.key});
+  @override
+  State<WebAuthPage> createState() => _WebAuthPageState();
+}
+
+class _WebAuthPageState extends State<WebAuthPage> {
+  late final WebViewController _controller;
+  final LocalAuthentication _auth = LocalAuthentication();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setNavigationDelegate(
+        NavigationDelegate(
+          onNavigationRequest: (req) {
+            final url = req.url;
+            if (url.startsWith('flutterfaceid://auth')) {
+              _handleBiometric();
+              return NavigationDecision.prevent;
+            }
+            return NavigationDecision.navigate;
+          },
+        ),
+      )
+      ..loadRequest(
+        Uri.parse('https://faceid-login-flow.lovable.app/'),
+      );
+  }
+
+  Future<void> _handleBiometric() async {
+    final canAuth = await _auth.canCheckBiometrics;
+    final didAuth = canAuth && await _auth.authenticate(
+      localizedReason: 'Use Face ID para continuar',
+      options: const AuthenticationOptions(biometricOnly: true),
+    );
+    final callback = didAuth
+        ? 'https://faceid-login-flow.lovable.app/?auth=success'
+        : 'https://faceid-login-flow.lovable.app/?auth=fail';
+    _controller.loadRequest(Uri.parse(callback));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Autenticação')),
+      body: WebViewWidget(controller: _controller),
     );
   }
 }
