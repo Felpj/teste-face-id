@@ -353,15 +353,53 @@ class _WebAuthPageState extends State<WebAuthPage> {
   }
 
   Future<void> _handleBiometric() async {
-    final canAuth = await _auth.canCheckBiometrics;
-    final didAuth = canAuth && await _auth.authenticate(
-      localizedReason: 'Use Face ID para continuar',
-      options: const AuthenticationOptions(biometricOnly: true),
-    );
+    // Verifica se pode usar biometria (isso retornará false no simulador iOS)
+    final bool canCheckBiometrics = await _auth.canCheckBiometrics;
+    final bool isDeviceSupported = await _auth.isDeviceSupported();
+    
+    bool didAuth = false;
+    
+    if (canCheckBiometrics && isDeviceSupported) {
+      // Dispositivo real - tenta autenticação biométrica
+      didAuth = await _auth.authenticate(
+        localizedReason: 'Use Face ID para continuar',
+        options: const AuthenticationOptions(biometricOnly: true),
+      );
+    } else {
+      // No simulador, fornece uma autenticação simulada com diálogo
+      didAuth = await _showSimulatedAuthDialog();
+    }
+    
     final callback = didAuth
         ? 'https://faceid-login-flow.lovable.app/?auth=success'
         : 'https://faceid-login-flow.lovable.app/?auth=fail';
     _controller.loadRequest(Uri.parse(callback));
+  }
+  
+  // Diálogo para simular autenticação no simulador
+  Future<bool> _showSimulatedAuthDialog() async {
+    // No simulador, mostra um diálogo para simular a autenticação
+    if (!mounted) return false;
+    
+    return await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Simulador detectado'),
+        content: const Text(
+          'O Face ID não funciona no simulador. Deseja simular uma autenticação bem-sucedida?'
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Falhar'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Sucesso'),
+          ),
+        ],
+      ),
+    ) ?? false;
   }
 
   @override
